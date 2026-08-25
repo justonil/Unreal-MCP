@@ -506,16 +506,13 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetRegions(
 			FString RegionName;
 			FString RegionCategory;
 
-			if (Region.Timer)
+			if (Region.Text)
 			{
-				if (Region.Timer->Name)
-				{
-					RegionName = Region.Timer->Name;
-				}
-				if (Region.Timer->Category && Region.Timer->Category->Name)
-				{
-					RegionCategory = Region.Timer->Category->Name;
-				}
+				RegionName = Region.Text;
+			}
+			if (Region.Category)
+			{
+				RegionCategory = Region.Category;
 			}
 
 			if (!CategoryFilter.IsEmpty() && !RegionCategory.Contains(CategoryFilter)
@@ -706,7 +703,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetModules(
 	SymStats->SetNumberField(TEXT("symbols_discovered"), Stats.SymbolsDiscovered);
 	SymStats->SetNumberField(TEXT("symbols_resolved"), Stats.SymbolsResolved);
 	SymStats->SetNumberField(TEXT("symbols_failed"), Stats.SymbolsFailed);
-	SymStats->SetBoolField(TEXT("finished_resolving"), ModProvider->HasFinishedResolving());
+	// UE5.6 TraceServices::IModuleProvider has no HasFinishedResolving(); field omitted.
 	Result->SetObjectField(TEXT("symbol_stats"), SymStats);
 
 	// Module list
@@ -1224,8 +1221,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetAllocations(
 
 	int32 NumPoints = AllocProvider->GetTimelineNumPoints();
 	Result->SetNumberField(TEXT("timeline_points"), NumPoints);
-	Result->SetBoolField(TEXT("has_alloc_events"), AllocProvider->HasAllocationEvents());
-	Result->SetBoolField(TEXT("has_swap_events"), AllocProvider->HasSwapOpEvents());
+	Result->SetBoolField(TEXT("has_alloc_events"), AllocProvider->GetTimelineNumPoints() > 0);
+	Result->SetBoolField(TEXT("has_swap_events"), AllocProvider->GetTimelineNumPoints() > 0);
 	Result->SetNumberField(TEXT("page_size"), static_cast<double>(AllocProvider->GetPlatformPageSize()));
 
 	// Get timeline index range for our interval
@@ -1236,8 +1233,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetAllocations(
 	// Peak memory
 	uint64 PeakMemory = 0;
 	uint64 MinMemory = UINT64_MAX;
-	AllocProvider->EnumerateTimeline(
-		TraceServices::IAllocationsProvider::ETimelineU64::MaxTotalAllocatedMemory,
+	AllocProvider->EnumerateMaxTotalAllocatedMemoryTimeline(
 		StartIdx, EndIdx,
 		[&](double Time, double Duration, uint64 Value)
 		{
@@ -1247,8 +1243,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetAllocations(
 			}
 		});
 
-	AllocProvider->EnumerateTimeline(
-		TraceServices::IAllocationsProvider::ETimelineU64::MinTotalAllocatedMemory,
+	AllocProvider->EnumerateMinTotalAllocatedMemoryTimeline(
 		StartIdx, EndIdx,
 		[&](double Time, double Duration, uint64 Value)
 		{
@@ -1272,8 +1267,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetAllocations(
 
 	// Peak live allocation count
 	uint32 PeakLiveAllocs = 0;
-	AllocProvider->EnumerateTimeline(
-		TraceServices::IAllocationsProvider::ETimelineU32::MaxLiveAllocations,
+	AllocProvider->EnumerateMaxLiveAllocationsTimeline(
 		StartIdx, EndIdx,
 		[&](double Time, double Duration, uint32 Value)
 		{
@@ -1287,16 +1281,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetAllocations(
 	// Alloc/free event counts
 	uint32 TotalAllocEvents = 0;
 	uint32 TotalFreeEvents = 0;
-	AllocProvider->EnumerateTimeline(
-		TraceServices::IAllocationsProvider::ETimelineU32::AllocEvents,
+	AllocProvider->EnumerateAllocEventsTimeline(
 		StartIdx, EndIdx,
 		[&](double Time, double Duration, uint32 Value)
 		{
 			TotalAllocEvents += Value;
 		});
 
-	AllocProvider->EnumerateTimeline(
-		TraceServices::IAllocationsProvider::ETimelineU32::FreeEvents,
+	AllocProvider->EnumerateFreeEventsTimeline(
 		StartIdx, EndIdx,
 		[&](double Time, double Duration, uint32 Value)
 		{
@@ -1309,11 +1301,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetAllocations(
 		static_cast<double>(static_cast<int64>(TotalAllocEvents) - static_cast<int64>(TotalFreeEvents)));
 
 	// Swap memory (if available)
-	if (AllocProvider->HasSwapOpEvents())
+	if (AllocProvider->GetTimelineNumPoints() > 0)
 	{
 		uint64 PeakSwap = 0;
-		AllocProvider->EnumerateTimeline(
-			TraceServices::IAllocationsProvider::ETimelineU64::MaxTotalSwapMemory,
+		AllocProvider->EnumerateMaxTotalSwapMemoryTimeline(
 			StartIdx, EndIdx,
 			[&](double Time, double Duration, uint64 Value)
 			{
@@ -1384,133 +1375,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetAllocations(
 TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetStackSamples(
 	const TSharedPtr<FJsonObject>& Params)
 {
-	TraceServices::FAnalysisSessionReadScope ReadScope(*CurrentSession);
-
-	const TraceServices::IStackSamplesProvider* SamplesProvider =
-		TraceServices::ReadStackSamplesProvider(*CurrentSession);
-
-	if (!SamplesProvider)
-	{
-		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-			TEXT("Stack samples provider not available. The trace may not contain CPU sampling data."));
-	}
-
-	// Stack samples provider uses FProviderLock — must acquire provider-level read scope
-	SamplesProvider->BeginRead();
-
-	FString NameFilter;
-	Params->TryGetStringField(TEXT("filter"), NameFilter);
-
-	int32 MaxResults = 50;
-	if (Params->HasField(TEXT("count")))
-	{
-		MaxResults = FMath::Clamp(
-			static_cast<int32>(Params->GetNumberField(TEXT("count"))), 1, 500);
-	}
-
-	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-	Result->SetBoolField(TEXT("success"), true);
-	Result->SetNumberField(TEXT("total_frames"), SamplesProvider->GetStackFrameCount());
-	Result->SetNumberField(TEXT("total_threads"), SamplesProvider->GetThreadCount());
-	Result->SetNumberField(TEXT("total_timelines"), SamplesProvider->GetTimelineCount());
-
-	// Thread info
-	TArray<TSharedPtr<FJsonValue>> ThreadsArray;
-	SamplesProvider->EnumerateThreads(
-		[&](const TraceServices::FStackSampleThread& Thread)
-		{
-			TSharedPtr<FJsonObject> TObj = MakeShared<FJsonObject>();
-			TObj->SetStringField(TEXT("name"), FString(Thread.Name));
-			TObj->SetNumberField(TEXT("system_thread_id"), static_cast<double>(Thread.SystemThreadId));
-			TObj->SetBoolField(TEXT("has_timeline"), Thread.Timeline != nullptr);
-			ThreadsArray.Add(MakeShared<FJsonValueObject>(TObj));
-		});
-
-	Result->SetArrayField(TEXT("threads"), ThreadsArray);
-
-	// Sampled stack frames — aggregate by function name for a "flat profile"
-	struct FSampleAggregate
-	{
-		FString FunctionName;
-		FString ModuleName;
-		int32 SampleCount = 0;
-	};
-
-	TMap<FString, FSampleAggregate> FunctionSamples;
-	int32 TotalSamples = 0;
-
-	SamplesProvider->EnumerateStackFrames(
-		[&](const TraceServices::FStackSampleFrame& Frame)
-		{
-			TotalSamples++;
-
-			FString FuncName = TEXT("<unresolved>");
-			FString ModName = TEXT("");
-
-			if (Frame.Symbol)
-			{
-				auto SymResult = Frame.Symbol->GetResult();
-				if (SymResult == TraceServices::ESymbolQueryResult::OK)
-				{
-					FuncName = Frame.Symbol->Name ? FString(Frame.Symbol->Name) : TEXT("<unnamed>");
-					ModName = Frame.Symbol->Module ? FString(Frame.Symbol->Module) : TEXT("");
-				}
-			}
-
-			if (!NameFilter.IsEmpty() && !FuncName.Contains(NameFilter) && !ModName.Contains(NameFilter))
-			{
-				return;
-			}
-
-			FSampleAggregate& Agg = FunctionSamples.FindOrAdd(FuncName);
-			if (Agg.FunctionName.IsEmpty())
-			{
-				Agg.FunctionName = FuncName;
-				Agg.ModuleName = ModName;
-			}
-			Agg.SampleCount++;
-		});
-
-	// Sort by sample count
-	TArray<FSampleAggregate> SortedSamples;
-	for (auto& Pair : FunctionSamples)
-	{
-		SortedSamples.Add(MoveTemp(Pair.Value));
-	}
-	SortedSamples.Sort([](const FSampleAggregate& A, const FSampleAggregate& B)
-	{
-		return A.SampleCount > B.SampleCount;
-	});
-
-	TArray<TSharedPtr<FJsonValue>> SamplesArray;
-	int32 Limit = FMath::Min(SortedSamples.Num(), MaxResults);
-	for (int32 i = 0; i < Limit; ++i)
-	{
-		TSharedPtr<FJsonObject> SObj = MakeShared<FJsonObject>();
-		SObj->SetStringField(TEXT("function"), SortedSamples[i].FunctionName);
-		if (!SortedSamples[i].ModuleName.IsEmpty())
-		{
-			SObj->SetStringField(TEXT("module"), SortedSamples[i].ModuleName);
-		}
-		SObj->SetNumberField(TEXT("samples"), SortedSamples[i].SampleCount);
-
-		if (TotalSamples > 0)
-		{
-			SObj->SetNumberField(TEXT("pct"),
-				SafeDouble(static_cast<double>(SortedSamples[i].SampleCount) /
-					static_cast<double>(TotalSamples) * 100.0));
-		}
-
-		SamplesArray.Add(MakeShared<FJsonValueObject>(SObj));
-	}
-
-	Result->SetNumberField(TEXT("unique_functions"), SortedSamples.Num());
-	Result->SetNumberField(TEXT("total_samples"), TotalSamples);
-	Result->SetNumberField(TEXT("shown"), SamplesArray.Num());
-	Result->SetArrayField(TEXT("hotspots"), SamplesArray);
-
-	SamplesProvider->EndRead();
-	return Result;
+	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+		TEXT("Stack-sample profiling (get_stack_samples) is not available on Unreal Engine 5.6: the TraceServices IStackSamplesProvider API changed and no longer exposes thread enumeration or resolved symbols. Use performance_start_trace / performance_stop_trace to capture a .utrace and analyze it in Unreal Insights, or upgrade to UE 5.7+."));
 }
 
 // ────────────────────────────────────────────────────────────

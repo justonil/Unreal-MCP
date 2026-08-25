@@ -1021,8 +1021,7 @@ FString StateTreeHelpers::ExpressionOperandToString(uint8 Operand)
 		return TEXT("And");
 	case EStateTreeExpressionOperand::Or:
 		return TEXT("Or");
-	case EStateTreeExpressionOperand::Multiply:
-		return TEXT("Multiply");
+	// UE5.6 EStateTreeExpressionOperand has no Multiply (Copy/And/Or only).
 	default:
 		return TEXT("Unknown");
 	}
@@ -1409,11 +1408,7 @@ TSharedPtr<FJsonObject> StateTreeHelpers::BindingToJson(
 		}
 	}
 
-	// Output binding flag
-	if (Binding.IsOutputBinding())
-	{
-		BindingJson->SetBoolField(TEXT("is_output_binding"), true);
-	}
+	// UE5.6 FStateTreePropertyPathBinding has no IsOutputBinding(); output-binding flag omitted.
 
 	return BindingJson;
 }
@@ -1485,7 +1480,7 @@ bool StateTreeHelpers::CompileTree(UStateTree* Tree, TArray<FString>& OutMessage
 
 	FStateTreeCompilerLog CompilerLog;
 	FStateTreeCompiler Compiler(CompilerLog);
-	bool bSuccess = Compiler.Compile(Tree);
+	bool bSuccess = Compiler.Compile(*Tree);
 
 	// Extract messages from the tokenized message log
 	TArray<TSharedRef<FTokenizedMessage>> TokenizedMessages = CompilerLog.ToTokenizedMessages();

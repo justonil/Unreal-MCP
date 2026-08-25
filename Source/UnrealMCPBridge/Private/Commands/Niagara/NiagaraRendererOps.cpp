@@ -6,6 +6,7 @@
 #include "NiagaraEmitter.h"
 #include "NiagaraEmitterHandle.h"
 #include "NiagaraRendererProperties.h"
+#include "NiagaraTypes.h"
 #include "NiagaraSpriteRendererProperties.h"
 #include "NiagaraMeshRendererProperties.h"
 #include "NiagaraRibbonRendererProperties.h"
@@ -802,13 +803,13 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraRendererB
 		BoundVar.SetName(FName(*FString::Printf(TEXT("Particles.%s"), *AttributeName)));
 	}
 
-	// SetValue takes FName, FVersionedNiagaraEmitterBase, ENiagaraRendererSourceDataMode
-	FVersionedNiagaraEmitterBase VersionedEmitterBase;
-	VersionedEmitterBase.Emitter = Handle->GetInstance().Emitter;
-	VersionedEmitterBase.Version = EmitterData->Version.VersionGuid;
+	// SetValue takes FName, FVersionedNiagaraEmitter, ENiagaraRendererSourceDataMode
+	FVersionedNiagaraEmitter VersionedEmitter;
+	VersionedEmitter.Emitter = Handle->GetInstance().Emitter;
+	VersionedEmitter.Version = EmitterData->Version.VersionGuid;
 	Binding->SetValue(
 		BoundVar.GetName(),
-		VersionedEmitterBase,
+		VersionedEmitter,
 		ENiagaraRendererSourceDataMode::Particles);
 
 	NiagaraHelpers::CompileAndSync(System);

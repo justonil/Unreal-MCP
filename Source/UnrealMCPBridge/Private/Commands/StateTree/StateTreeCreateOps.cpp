@@ -92,10 +92,7 @@ static void InitEditorNode(FStateTreeEditorNode& OutNode, UScriptStruct* NodeStr
 		{
 			OutNode.Instance.InitializeAs(InstanceType);
 		}
-		if (const UScriptStruct* RuntimeType = Cast<UScriptStruct>(NodeBase->GetExecutionRuntimeDataType()))
-		{
-			OutNode.ExecutionRuntimeData.InitializeAs(RuntimeType);
-		}
+		// UE5.6 FStateTreeEditorNode exposes only Node + Instance (no ExecutionRuntimeData).
 	}
 }
 

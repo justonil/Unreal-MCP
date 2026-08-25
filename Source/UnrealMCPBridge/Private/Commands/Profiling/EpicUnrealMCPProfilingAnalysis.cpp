@@ -2214,10 +2214,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetDiagnose(
 	double GpuAvgMs = 0.0;
 	FString GpuQueueName;
 
-	if (TimingProvider && TimingProvider->HasGpuTiming())
+	uint32 GpuTimelineIndex = UINT32_MAX;
+	if (TimingProvider && TimingProvider->GetGpuTimelineIndex(GpuTimelineIndex))
 	{
 		// Find the primary GPU queue
-		uint32 GpuTimelineIndex = UINT32_MAX;
 		TimingProvider->EnumerateGpuQueues(
 			[&](const TraceServices::FGpuQueueInfo& QueueInfo)
 			{
